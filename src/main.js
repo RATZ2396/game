@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import nipplejs from 'nipplejs';
 
 // ============================================================================
 // TIME CLASS
@@ -20,29 +21,98 @@ class Time {
 }
 
 // ============================================================================
-// INPUT MANAGER
+// INPUT MANAGER - Hybrid Keyboard + Touch Joystick
 // ============================================================================
 class InputManager {
   constructor() {
+    // Keyboard state
     this.keys = { w: false, a: false, s: false, d: false };
-    this.setupListeners();
+
+    // Joystick state
+    this.joystickVector = { x: 0, y: 0 };
+    this.joystickActive = false;
+    this.joystick = null;
+
+    this.setupKeyboard();
+    this.setupJoystick();
   }
 
-  setupListeners() {
+  setupKeyboard() {
     window.addEventListener('keydown', (e) => {
       const key = e.key.toLowerCase();
-      if (this.keys.hasOwnProperty(key)) this.keys[key] = true;
+      if (this.keys.hasOwnProperty(key)) {
+        this.keys[key] = true;
+        e.preventDefault();
+      }
     });
     window.addEventListener('keyup', (e) => {
       const key = e.key.toLowerCase();
-      if (this.keys.hasOwnProperty(key)) this.keys[key] = false;
+      if (this.keys.hasOwnProperty(key)) {
+        this.keys[key] = false;
+        e.preventDefault();
+      }
     });
   }
 
+  setupJoystick() {
+    const zone = document.getElementById('zone_joystick');
+    if (!zone) return;
+
+    // Check if mobile/touch device
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    if (!isTouchDevice && window.innerWidth > 768) {
+      zone.style.display = 'none';
+      return;
+    }
+
+    this.joystick = nipplejs.create({
+      zone: zone,
+      mode: 'static',
+      position: { left: '75px', bottom: '75px' },
+      color: '#00ffff',
+      size: 120,
+      restOpacity: 0.5,
+      fadeTime: 100
+    });
+
+    this.joystick.on('move', (evt, data) => {
+      this.joystickActive = true;
+      // Normalize the vector (force is 0-1 based on distance)
+      const force = Math.min(data.force, 1);
+      const angle = data.angle.radian;
+      this.joystickVector.x = Math.cos(angle) * force;
+      this.joystickVector.y = Math.sin(angle) * force;
+    });
+
+    this.joystick.on('end', () => {
+      this.joystickActive = false;
+      this.joystickVector.x = 0;
+      this.joystickVector.y = 0;
+    });
+  }
+
+  // Legacy method for compatibility
   getAxis(axis) {
     if (axis === 'horizontal') return (this.keys.d ? 1 : 0) - (this.keys.a ? 1 : 0);
     if (axis === 'vertical') return (this.keys.w ? 1 : 0) - (this.keys.s ? 1 : 0);
     return 0;
+  }
+
+  // New unified method - returns {x, z} for 3D movement
+  getMovementVector() {
+    // Keyboard input
+    const keyX = (this.keys.d ? 1 : 0) - (this.keys.a ? 1 : 0);
+    const keyZ = (this.keys.s ? 1 : 0) - (this.keys.w ? 1 : 0); // Inverted for 3D coords
+
+    // If joystick is active, prioritize it
+    if (this.joystickActive) {
+      return {
+        x: this.joystickVector.x,
+        z: -this.joystickVector.y // Invert Y to match 3D Z axis
+      };
+    }
+
+    return { x: keyX, z: keyZ };
   }
 }
 
@@ -1120,9 +1190,8 @@ class Player {
   }
 
   handleMovement(dt) {
-    const h = this.inputManager.getAxis('horizontal');
-    const v = this.inputManager.getAxis('vertical');
-    this.inputVector.set(h, 0, -v);
+    const move = this.inputManager.getMovementVector();
+    this.inputVector.set(move.x, 0, move.z);
     if (this.inputVector.length() > 0) this.inputVector.normalize();
     this.mesh.position.x += this.inputVector.x * this.moveSpeed * dt;
     this.mesh.position.z += this.inputVector.z * this.moveSpeed * dt;
@@ -1594,7 +1663,7 @@ class GameManager {
     const btn = document.createElement('button');
     btn.id = 'mute-btn';
     btn.textContent = '🔊';
-    btn.style.cssText = `position:fixed;bottom:20px;right:20px;width:50px;height:50px;font-size:24px;border:none;border-radius:50%;background:rgba(0,0,0,0.6);color:white;cursor:pointer;z-index:1000;transition:all 0.2s;`;
+    btn.style.cssText = `position:fixed;top:80px;right:20px;width:50px;height:50px;font-size:24px;border:none;border-radius:50%;background:rgba(0,0,0,0.6);color:white;cursor:pointer;z-index:1000;transition:all 0.2s;pointer-events:auto;`;
     btn.onclick = () => {
       this.soundManager.init();
       const muted = this.soundManager.toggleMute();
