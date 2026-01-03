@@ -1582,7 +1582,7 @@ class GameManager {
     dirLight.shadow.camera.top = 50;
     dirLight.shadow.camera.bottom = -50;
     this.scene.add(dirLight);
-    this.scene.add(new THREE.AmbientLight(0x404060, 0.4));
+    this.scene.add(new THREE.AmbientLight(0x404060, 0.6));
 
     // Tron-style procedural grid floor
     const gridSize = 200;
