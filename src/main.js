@@ -117,6 +117,76 @@ class InputManager {
 }
 
 // ============================================================================
+// MENU MANAGER - Main Menu & Game States
+// ============================================================================
+const GAME_STATE = {
+  MENU: 'MENU',
+  PLAYING: 'PLAYING',
+  PAUSED: 'PAUSED',
+  GAME_OVER: 'GAME_OVER',
+  VICTORY: 'VICTORY'
+};
+
+class MenuManager {
+  constructor() {
+    this.menuElement = null;
+    this.startBtn = null;
+    this.onStartCallback = null;
+  }
+
+  init(onStart) {
+    this.onStartCallback = onStart;
+    this.menuElement = document.getElementById('main-menu');
+    this.startBtn = document.getElementById('start-btn');
+
+    if (this.startBtn) {
+      this.startBtn.addEventListener('click', () => this.handleStart());
+    }
+  }
+
+  handleStart() {
+    if (this.onStartCallback) {
+      this.hideMenu();
+      this.showHUD();
+      this.onStartCallback();
+    }
+  }
+
+  hideMenu() {
+    if (this.menuElement) {
+      this.menuElement.classList.add('hidden');
+    }
+  }
+
+  showMenu() {
+    if (this.menuElement) {
+      this.menuElement.classList.remove('hidden');
+    }
+    this.hideHUD();
+  }
+
+  showHUD() {
+    const gameUI = document.getElementById('game-ui');
+    const joystick = document.getElementById('zone_joystick');
+    const muteBtn = document.getElementById('mute-btn');
+
+    if (gameUI) gameUI.classList.remove('hud-hidden');
+    if (joystick) joystick.classList.remove('hud-hidden');
+    if (muteBtn) muteBtn.classList.remove('hud-hidden');
+  }
+
+  hideHUD() {
+    const gameUI = document.getElementById('game-ui');
+    const joystick = document.getElementById('zone_joystick');
+    const muteBtn = document.getElementById('mute-btn');
+
+    if (gameUI) gameUI.classList.add('hud-hidden');
+    if (joystick) joystick.classList.add('hud-hidden');
+    if (muteBtn) muteBtn.classList.add('hud-hidden');
+  }
+}
+
+// ============================================================================
 // SOUND MANAGER - Synthesized SFX using Web Audio API
 // ============================================================================
 class SoundManager {
@@ -791,10 +861,12 @@ class ExperienceGem {
 // PROJECTILE
 // ============================================================================
 class Projectile {
-  constructor(scene, damage = 1, color = 0xffff00) {
+  constructor(scene, damage = 1, color = 0xffff00, piercing = 0) {
     this.scene = scene; this.mesh = null; this.speed = 25;
     this.direction = new THREE.Vector3(); this.lifetime = 2;
     this.age = 0; this.isDestroyed = false; this.damage = damage; this.color = color;
+    this.piercing = piercing; // How many enemies can it pass through
+    this.hitCount = 0;
   }
 
   start(pos, dir) {
@@ -816,6 +888,8 @@ class Projectile {
 
   getPosition() { return this.mesh.position; }
   getDamage() { return this.damage; }
+  getPiercing() { return this.piercing; }
+  registerHit() { this.hitCount++; return this.hitCount > this.piercing; }
   destroy() { this.isDestroyed = true; this.scene.remove(this.mesh); this.mesh.geometry.dispose(); this.mesh.material.dispose(); }
 }
 
@@ -828,9 +902,11 @@ class Weapon {
     if (type === 'pistol') {
       this.name = 'Pistola'; this.damage = 1; this.fireRate = 0.5;
       this.range = 15; this.projectileCount = 1; this.spreadAngle = 0; this.color = 0xffff00;
+      this.piercing = 1; // Can pass through 1 enemy
     } else {
       this.name = 'Escopeta'; this.damage = 1.5; this.fireRate = 1.2;
       this.range = 8; this.projectileCount = 3; this.spreadAngle = Math.PI / 8; this.color = 0xff6600;
+      this.piercing = 0; // No piercing for shotgun
     }
   }
 
@@ -845,7 +921,7 @@ class Weapon {
     baseDir.y = 0; baseDir.normalize();
 
     if (this.projectileCount === 1) {
-      const p = new Projectile(scene, this.damage, this.color);
+      const p = new Projectile(scene, this.damage, this.color, this.piercing);
       p.start(playerPos.clone(), baseDir);
       projectiles.push(p);
     } else {
@@ -853,7 +929,7 @@ class Weapon {
       for (let i = 0; i < this.projectileCount; i++) {
         const angle = -half + this.spreadAngle * i;
         const dir = this.rotateY(baseDir.clone(), angle);
-        const p = new Projectile(scene, this.damage, this.color);
+        const p = new Projectile(scene, this.damage, this.color, this.piercing);
         p.start(playerPos.clone(), dir);
         projectiles.push(p);
       }
@@ -1223,12 +1299,42 @@ class Player {
   }
 
   findClosestEnemy() {
-    let closest = null, minDist = Infinity;
+    const weaponRange = this.activeWeapon?.range || 15;
+    const candidates = [];
+
+    // PHASE 1: Filter by weapon range (surface distance)
     for (const e of this.enemies) {
-      const d = this.mesh.position.distanceTo(e.getPosition());
-      if (d < minDist) { minDist = d; closest = e; }
+      if (e.isDestroyed) continue;
+      const rawDist = this.mesh.position.distanceTo(e.getPosition());
+      const surfaceDist = rawDist - (e.radius || 0.5);
+
+      // Only include enemies whose SURFACE is within weapon range
+      if (surfaceDist <= weaponRange) {
+        candidates.push({ enemy: e, surfaceDist });
+      }
     }
-    return closest;
+
+    // Also check GameManager's boss if not already in enemies array
+    if (this.gameManager?.boss && !this.gameManager.boss.isDestroyed) {
+      const boss = this.gameManager.boss;
+      const inList = candidates.some(c => c.enemy === boss);
+      if (!inList) {
+        const rawDist = this.mesh.position.distanceTo(boss.getPosition());
+        const surfaceDist = rawDist - boss.radius;
+        if (surfaceDist <= weaponRange) {
+          candidates.push({ enemy: boss, surfaceDist });
+        }
+      }
+    }
+
+    // PHASE 2: No valid targets
+    if (candidates.length === 0) return null;
+
+    // PHASE 3: Sort by surface distance (closest first)
+    candidates.sort((a, b) => a.surfaceDist - b.surfaceDist);
+
+    // Return the closest valid target
+    return candidates[0].enemy;
   }
 
   takeDamage(amt) { this.currentHealth -= amt; return this.currentHealth <= 0; }
@@ -1282,12 +1388,14 @@ class Enemy {
   constructor(scene, target, type = 'normal') {
     this.scene = scene; this.target = target; this.mesh = null; this.material = null;
     this.direction = new THREE.Vector3(); this.isDestroyed = false;
+    this.isBoss = false;
 
     const cfg = ENEMY_TYPES[type];
     this.type = type; this.color = cfg.color; this.originalColor = cfg.color;
     this.emissiveColor = cfg.emissive; this.scale = cfg.scale; this.speed = cfg.speed;
     this.maxHealth = cfg.health; this.health = cfg.health;
     this.contactDamage = cfg.contactDamage; this.xpValue = cfg.xpValue;
+    this.radius = cfg.scale * 0.5; // Hitbox radius based on scale
 
     this.isFlashing = false; this.flashTimer = 0; this.flashDuration = 0.1;
   }
@@ -1341,6 +1449,7 @@ class Enemy {
   getColor() { return this.originalColor; }
   getContactDamage() { return this.contactDamage; }
   getXpValue() { return this.xpValue; }
+  getRadius() { return this.radius; }
 
   destroy() {
     this.isDestroyed = true;
@@ -1375,6 +1484,7 @@ class Boss {
     this.isFlashing = false;
     this.flashTimer = 0;
     this.flashDuration = 0.15;
+    this.radius = 2.5; // Large hitbox radius for boss
   }
 
   start(pos) {
@@ -1471,6 +1581,7 @@ class EnemySpawner {
   }
 
   update(dt) {
+    // FULL CHAOS MODE - No spawn reduction during boss!
     const interval = this.baseInterval * this.waveManager.getSpawnMult();
     this.timer += dt;
     if (this.timer >= interval) { this.timer = 0; this.spawn(); }
@@ -1532,17 +1643,21 @@ class GameManager {
     this.composer = null;
     this.time = null; this.inputManager = null; this.uiManager = null;
     this.particleSystem = null; this.waveManager = null; this.floatingTextManager = null;
-    this.soundManager = null;
+    this.soundManager = null; this.menuManager = null;
     this.player = null; this.enemySpawner = null; this.cameraController = null;
     this.projectiles = []; this.experienceGems = [];
     this.isGameOver = false; this.isPaused = false; this.animationId = null;
     this.collisionDist = 1.2; this.projectileHitDist = 1.0; this.gemCollectDist = 0.8;
     this.contactDmgTimer = 0; this.contactDmgInterval = 0.5;
 
+    // Game State
+    this.gameState = GAME_STATE.MENU;
+    this.menuCameraAngle = 0;
+
     // Boss state
     this.boss = null;
     this.bossSpawned = false;
-    this.bossSpawnTime = 60; // Spawn boss at 60 seconds
+    this.bossSpawnTime = 60;
     this.isVictory = false;
     this.slowMoScale = 1.0;
     this.slowMoTimer = 0;
@@ -1790,15 +1905,21 @@ class GameManager {
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
         if (e.isDestroyed) continue;
-        if (p.getPosition().distanceTo(e.getPosition()) < this.projectileHitDist) {
+
+        // Use adjusted distance (surface-to-surface)
+        const hitDist = this.projectileHitDist + (e.radius || 0.5);
+        if (p.getPosition().distanceTo(e.getPosition()) < hitDist) {
           const dmg = p.getDamage();
           const died = e.takeDamage(dmg);
           const pos = e.getPosition().clone(); pos.y += 1.5;
           this.floatingTextManager.spawn(Math.round(dmg).toString(), pos, died ? '#ff4444' : '#ffff00');
-          const deathPos = e.getPosition().clone();
-          const color = e.getColor();
-          p.destroy(); this.projectiles.splice(i, 1);
+
+          // Handle piercing - only destroy if hit limit reached
+          const shouldDestroy = p.registerHit();
+
           if (died) {
+            const deathPos = e.getPosition().clone();
+            const color = e.getColor();
             const xp = e.getXpValue();
             this.enemySpawner.removeEnemy(e);
             this.uiManager.updateScore(10);
@@ -1808,7 +1929,14 @@ class GameManager {
           } else {
             this.soundManager.playHit();
           }
-          break;
+
+          // Only destroy projectile if piercing exhausted
+          if (shouldDestroy) {
+            p.destroy();
+            this.projectiles.splice(i, 1);
+            break; // Exit enemy loop, projectile is gone
+          }
+          // If piercing, continue to next enemy (don't break)
         }
       }
     }
@@ -1972,6 +2100,15 @@ class GameManager {
     this.soundManager.playBossAlert();
     this.uiManager.showWarning('⚠️ WARNING: BOSS APPROACHING ⚠️');
 
+    // ARENA CLEANUP - Clear all enemies for dramatic boss entrance
+    for (const e of [...this.enemySpawner.getEnemies()]) {
+      const pos = e.getPosition().clone();
+      this.particleSystem.spawnExplosion(pos, e.getColor(), 4);
+      this.enemySpawner.removeEnemy(e);
+    }
+
+    // FULL CHAOS MODE - enemies keep spawning at normal rate!
+
     // Spawn boss far from player
     const angle = Math.random() * Math.PI * 2;
     const spawnDist = 35;
@@ -1983,6 +2120,9 @@ class GameManager {
 
     this.boss = new Boss(this.scene, this.player);
     this.boss.start(pos);
+
+    // CRITICAL: Add boss to enemies array so it can be targeted!
+    this.enemySpawner.enemies.push(this.boss);
 
     // Show boss HP bar
     this.uiManager.showBossBar(this.boss.getName());
@@ -2048,6 +2188,10 @@ class GameManager {
     this.player.gainXp(this.boss.getXpValue());
     this.uiManager.updateScore(1000);
 
+    // Remove boss from enemies array
+    const bossIdx = this.enemySpawner.enemies.indexOf(this.boss);
+    if (bossIdx > -1) this.enemySpawner.enemies.splice(bossIdx, 1);
+
     this.boss.destroy();
   }
 
@@ -2065,14 +2209,101 @@ class GameManager {
   }
 
   animate() {
-    if (this.isGameOver && !this.isVictory) return;
     this.animationId = requestAnimationFrame(() => this.animate());
     this.time.update();
-    if (!this.isPaused) this.update();
+
+    // Menu state - camera orbits around origin
+    if (this.gameState === GAME_STATE.MENU) {
+      this.menuCameraAngle += this.time.deltaTime * 0.2;
+      const radius = 25;
+      this.camera.position.x = Math.cos(this.menuCameraAngle) * radius;
+      this.camera.position.z = Math.sin(this.menuCameraAngle) * radius;
+      this.camera.position.y = 20;
+      this.camera.lookAt(0, 0, 0);
+      this.composer.render();
+      return;
+    }
+
+    // Game over state - stop updates
+    if (this.gameState === GAME_STATE.GAME_OVER && !this.isVictory) {
+      this.composer.render();
+      return;
+    }
+
+    // Playing state
+    if (!this.isPaused && this.gameState === GAME_STATE.PLAYING) {
+      this.update();
+    }
+
     this.composer.render();
   }
 
-  run() { this.awake(); this.start(); this.animate(); }
+  startGame() {
+    this.gameState = GAME_STATE.PLAYING;
+
+    // Reset all game state
+    this.isGameOver = false;
+    this.isPaused = false;
+    this.isVictory = false;
+    this.bossSpawned = false;
+    this.boss = null;
+    this.slowMoScale = 1.0;
+    this.slowMoTimer = 0;
+    this.contactDmgTimer = 0;
+
+    // Clear entities
+    for (const p of this.projectiles) p.destroy();
+    this.projectiles.length = 0;
+    for (const g of this.experienceGems) g.destroy();
+    this.experienceGems.length = 0;
+    for (const e of [...this.enemySpawner.getEnemies()]) this.enemySpawner.removeEnemy(e);
+
+    // Reset player
+    if (this.player.mesh) {
+      this.scene.remove(this.player.mesh);
+      this.player.mesh.geometry.dispose();
+      this.player.mesh.material.dispose();
+    }
+
+    this.player = new Player(this.scene, this.inputManager);
+    this.player.start();
+    this.player.setGameManager(this);
+    this.player.setProjectilesArray(this.projectiles);
+    this.player.setEnemiesArray(this.enemySpawner.getEnemies());
+
+    this.enemySpawner.player = this.player;
+    this.enemySpawner.timer = 0;
+
+    this.waveManager.gameTime = 0;
+    this.waveManager.healthMult = 1;
+    this.waveManager.spawnMult = 1;
+
+    this.cameraController.target = this.player;
+
+    // Reset UI
+    this.uiManager.reset();
+    this.updateWeaponUI();
+    this.updateSkillsUI();
+
+    // Play start sound
+    this.soundManager.init();
+    this.soundManager.playLevelUp();
+  }
+
+  run() {
+    this.awake();
+    this.start();
+
+    // Initialize menu manager
+    this.menuManager = new MenuManager();
+    this.menuManager.init(() => this.startGame());
+
+    // Start in menu state
+    this.gameState = GAME_STATE.MENU;
+    this.menuManager.hideHUD();
+
+    this.animate();
+  }
 }
 
 // ============================================================================

@@ -26,16 +26,29 @@ Sobrevivir oleadas infinitas de enemigos, recolectar XP, subir de nivel, elegir 
 ┌─────────────────────────────────────────────────────────────┐
 │                      GameManager                            │
 │  - Bucle principal (animate)                                │
-│  - Estados: Playing, Paused, LevelUp, GameOver, Victory     │
+│  - Estados: MENU, PLAYING, PAUSED, GAME_OVER, VICTORY       │
 │  - Inicialización de escena, cámara, renderer               │
 │  - Post-processing (EffectComposer + UnrealBloomPass)       │
 └─────────────────────────────────────────────────────────────┘
            │
-    ┌──────┴──────┬──────────┬──────────┬──────────┐
-    ▼             ▼          ▼          ▼          ▼
-┌────────┐  ┌─────────┐  ┌────────┐  ┌────────┐  ┌─────────┐
-│  Time  │  │InputMgr │  │ Player │  │UIMgr   │  │SoundMgr │
-└────────┘  └─────────┘  └────────┘  └────────┘  └─────────┘
+    ┌──────┴──────┬──────────┬──────────┬──────────┬──────────┐
+    ▼             ▼          ▼          ▼          ▼          ▼
+┌────────┐  ┌─────────┐  ┌────────┐  ┌────────┐  ┌─────────┐  ┌─────────┐
+│  Time  │  │InputMgr │  │ Player │  │UIMgr   │  │SoundMgr │  │MenuMgr  │
+└────────┘  └─────────┘  └────────┘  └────────┘  └─────────┘  └─────────┘
+```
+
+### Flujo de Estados del Juego
+
+```
+MENU ──(START)──► PLAYING ──(HP=0)──► GAME_OVER
+                     │                     │
+                     │                (Play Again)
+                     ▼                     │
+              (Kill Boss)                  ▼
+                     │              ┌──────────┐
+                     └──────────────► VICTORY  │
+                                    └──────────┘
 ```
 
 ### Detalle de Clases
@@ -44,6 +57,8 @@ Sobrevivir oleadas infinitas de enemigos, recolectar XP, subir de nivel, elegir 
 |-------|-----------------|
 | **Time** | `deltaTime` para movimiento frame-independiente |
 | **InputManager** | Híbrido WASD + nipplejs. `getMovementVector()` unificado |
+| **MenuManager** | Main Menu, HUD visibility, startGame callback |
+| **GAME_STATE** | Enum: MENU, PLAYING, PAUSED, GAME_OVER, VICTORY |
 | **Player** | Movimiento, HP, XP, Weapons, SkillManager |
 | **Weapon** | Pistola/Escopeta. Auto-aim al enemigo más cercano |
 | **Projectile** | Balas con daño, velocidad, lifetime |
@@ -66,9 +81,16 @@ Sobrevivir oleadas infinitas de enemigos, recolectar XP, subir de nivel, elegir 
 ## 3. Mecánicas Implementadas
 
 ### ⚔️ Combate
-- **Auto-disparo**: El jugador dispara automáticamente al enemigo más cercano
-- **Colisiones**: Distancia euclidiana simple
-- **Daño por contacto**: Enemigos dañan al tocar (cooldown 0.5s)
+- **Auto-disparo**: El jugador dispara automáticamente al objetivo válido más cercano
+- **Sistema de Targeting Dinámico** (3 fases):
+  1. **Filtrado por Rango**: Solo candidatos cuya superficie esté dentro del rango del arma
+  2. **Ordenamiento**: Por distancia de superficie (`rawDist - radius`)
+  3. **Selección**: El enemigo con menor distancia de superficie
+- **Radios de Hitbox**:
+  - Normal: 0.5, Runner: 0.35, Tank: 0.75, **Boss: 2.5**
+- **Piercing**: Pistola atraviesa 1 enemigo, Escopeta no atraviesa
+- **Colisiones**: `hitDist = projectileHitDist + enemy.radius`
+- **Daño por contacto**: (cooldown 0.5s)
 - **Flash de daño**: Enemigos brillan blanco al recibir daño
 
 ### 📈 Progresión
@@ -96,6 +118,11 @@ Sobrevivir oleadas infinitas de enemigos, recolectar XP, subir de nivel, elegir 
 ### 🎉 Eventos
 - **Boss Fight** (60s): "The Cube King" aparece con alerta
 - **Victoria**: Slow-mo, explosión dorada, pantalla de victoria
+
+### 👑 Mecánicas de Jefe (Duel Mode)
+- **Limpieza de Arena**: Al spawnear el boss, todos los enemigos son eliminados con explosiones
+- **Spawn Reducido**: Durante el boss fight, nuevos enemigos aparecen cada 4s (vs 0.8s normal)
+- **Retorno Normal**: Al matar al boss, el spawn rate vuelve a la velocidad frenética
 
 ---
 
